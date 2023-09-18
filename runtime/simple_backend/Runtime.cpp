@@ -431,6 +431,65 @@ Z3_ast _sym_build_bool_to_bit(Z3_ast expr) {
                         _sym_build_integer(0, 1));
 }
 
+// Z3_ast _ast_negate(Z3_context c, Z3_ast a) {
+//   if (Z3_get_ast_kind(c, a) == Z3_APP_AST) {
+//     Z3_ast expr = a;
+//     switch (Z3_get_decl_kind(c, Z3_get_app_decl(c, Z3_to_app(c, a)))) {
+//       case Z3_OP_EQ:
+        
+//     }
+//   } else {
+//     return a;
+//   }
+// }
+
+// Z3_ast _ast_simplify(Z3_context c, Z3_ast a) {
+
+// }
+
+void _or_to_dnf(const std::vector<std::vector<std::vector<Z3_ast>>> &clauses, const unsigned int &n_clause,
+                const unsigned int &idx, std::vector<Z3_ast> &cur, std::vector<std::vector<Z3_ast>> &res) {
+  if (idx == n_clause) {
+    res.push_back(cur);
+  } else {
+    auto backup = cur;
+    for (auto &sub : clauses[idx]) {
+      cur.insert(cur.end(), sub.begin(), sub.end());
+      _or_to_dnf(clauses, n_clause, idx + 1, cur, res);
+      cur = backup;
+    }
+  }
+}
+
+void _to_dnf(const Z3_ast &expr, std::vector<std::vector<Z3_ast>> &res) {
+  if (Z3_get_ast_kind(g_context, expr) == Z3_APP_AST) {
+    auto expr_app = Z3_to_app(g_context, expr);
+    auto n_args = Z3_get_app_num_args(g_context, expr_app);
+
+    if (Z3_get_decl_kind(g_context, Z3_get_app_decl(g_context, expr_app)) == Z3_OP_OR) {
+      std::cerr << "OR: " << Z3_ast_to_string(g_context, expr) << std::endl;
+      for (unsigned int i = 0; i < n_args; ++i) {
+        _to_dnf(Z3_get_app_arg(g_context, expr_app, i), res);
+      }
+    } else if (Z3_get_decl_kind(g_context, Z3_get_app_decl(g_context, expr_app)) == Z3_OP_AND) {
+      std::cerr << "AND: " << Z3_ast_to_string(g_context, expr) << std::endl;
+      std::vector<std::vector<std::vector<Z3_ast>>> clauses(n_args);
+      std::vector<Z3_ast> cur;
+      for (unsigned int i = 0; i < n_args; ++i) {
+        _to_dnf(Z3_get_app_arg(g_context, expr_app, i), clauses[i]);
+      }
+      _or_to_dnf(clauses, n_args, 0, cur, res);
+    } else {
+      std::cerr << "OTHERS: " << Z3_ast_to_string(g_context, expr) << std::endl;
+      std::vector<Z3_ast> cur;
+      cur.push_back(expr);
+      res.push_back(cur);
+    }
+  } else {
+    std::cerr << "not app ast: " << Z3_get_ast_kind(g_context, expr) << ": " << Z3_ast_to_string(g_context, expr) << std::endl;
+  }
+}
+
 void _sym_push_path_constraint(Z3_ast constraint, int taken,
                                uintptr_t site_id [[maybe_unused]]) {
   if (constraint == nullptr)
@@ -464,6 +523,54 @@ void _sym_push_path_constraint(Z3_ast constraint, int taken,
   Z3_solver_assert(g_context, g_solver, taken ? not_constraint : constraint);
   fprintf(g_log, "Trying to solve:\n%s\n",
           Z3_solver_to_string(g_context, g_solver));
+
+  std::vector<std::vector<Z3_ast>> ReqList;
+  std::vector<std::vector<Z3_ast>> res;
+  std::vector<std::vector<Z3_ast>> single;
+
+  auto exprs = Z3_solver_get_assertions(g_context, g_solver);
+  auto n_expr = Z3_ast_vector_size(g_context, exprs);
+
+  for (unsigned int i = 0; i < n_expr; ++i) {
+    single.clear();
+    res.clear();
+    auto expr = Z3_ast_vector_get(g_context, exprs, i);
+    std::cerr << "To dnf ...\n";
+    _to_dnf(expr, single);
+
+    for (unsigned int i = 0; i < ReqList.size(); ++i) {
+      for (unsigned int j = 0; j < single.size(); ++j) {
+        std::vector<Z3_ast> cur;
+        for (auto x : ReqList[i]) cur.push_back(x);
+        for (auto y : single[j]) cur.push_back(y);
+        res.push_back(cur);
+      }
+    }
+
+    if (ReqList.size() == 0) {
+      for (unsigned int j = 0; j < single.size(); ++j) {
+        std::vector<Z3_ast> cur;
+        for (auto y : single[j]) cur.push_back(y);
+        res.push_back(cur);
+      }
+    }
+
+    ReqList = res;
+    std::cerr << "Expression " << i << std::endl;
+    for (auto clause : single) {
+      for (auto sub : clause) {
+        std::cerr << Z3_ast_to_string(g_context, sub) << " ";
+      }
+      std::cerr << std::endl;
+    }
+  }
+
+  for (auto &sub : ReqList) {
+    std::cerr << "Sub:" << std::endl;
+    for (auto &clause : sub) {
+      std::cerr << Z3_ast_to_string(g_context, clause) << " \n";
+    }
+  }
 
   Z3_lbool feasible = Z3_solver_check(g_context, g_solver);
   if (feasible == Z3_L_TRUE) {
